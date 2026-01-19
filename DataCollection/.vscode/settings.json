@@ -1,0 +1,5 @@
+{
+    "python.analysis.extraPaths": [
+        "./PassioGoVehicleFix/src/passiogo_fixed"
+    ]
+}
