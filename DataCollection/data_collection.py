@@ -62,11 +62,15 @@ def is_at_stop(bus: pg.Vehicle, stop: pg.Stop) -> bool:
     distance_threshold_km = 0.040 # 40 meter radius
     return (haversine((float(bus.latitude), float(bus.longitude)), (stop.latitude, stop.longitude)) < distance_threshold_km)
 
+def time_string():
+    localtime = time.localtime()
+    return f"{localtime.tm_year}-{localtime.tm_mon}-{localtime.tm_mday} {localtime.tm_hour}:{localtime.tm_min}:{localtime.tm_sec}"
+
 def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[str, StopNode]):
     log_time = int(time.time())
     target_time = log_time + 14 * 60 # run for the next 14 minutes
 
-    with open("rulost_data.csv", "a") as data, open("rulost_stops.csv", "a") as stops:
+    with open("rulost_data.csv", "a") as data, open("rulost_stops.txt", "a") as stops, open("log.txt", "a") as log:
         while int(time.time()) < target_time:
             vehicles = system.getVehicles()
             for vehicle in vehicles:
@@ -78,6 +82,7 @@ def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[str, Sto
                     last_position[vehicle.id] = None
                     first_log_time[vehicle.id] = None
                     print(f"Added vehicle {vehicle.id} to system")
+                    log.write(f"{time_string()} Added vehicle {vehicle.id} to system")
                 
                 # Vehicle exists but is not established in system
                 # check all stops in route to see first stop that bus reaches
@@ -91,6 +96,7 @@ def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[str, Sto
                             last_position[vehicle.id] = (float(vehicle.latitude), float(vehicle.longitude))
                             first_log_time[vehicle.id] = 0
                             print(f"Established vehicle {vehicle.id} in system at stop {last_stoptime[vehicle.id].stop_node.stop.name}")
+                            log.write(f"{time_string()} Established vehicle {vehicle.id} in system at stop {last_stoptime[vehicle.id].stop_node.stop.name}")
                             break
                         ptr = ptr.next
                         if ptr == routes_to_stops[vehicle.routeId]:
@@ -114,12 +120,14 @@ def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[str, Sto
 
                             print(f"{route_id},{stop_id},{semester},{day_of_sem},{day_of_week},{departure_time},{seconds_since_departure},{distance_left},{result_time}")
                             print(f"Vehicle {vehicle.id} went to {last_stoptime[vehicle.id].stop_node.next.stop.name}")
+                            log.write(f"{time_string()} Vehicle {vehicle.id} went to {last_stoptime[vehicle.id].stop_node.next.stop.name}")
                             if distance_left <= 10000: # failsafe against buses missing stops and looping back
                                 # Route id, stop id, semester, day of semester, day of week, departure time, seconds since departure, distance left, result time
                                 data.write(f"{route_id},{stop_id},{semester},{day_of_sem},{day_of_week},{departure_time},{seconds_since_departure},{distance_left},{result_time}\n")
                                 stops.write(f"{last_stoptime[vehicle.id].stop_node.next.stop.name} in route {vehicle.routeId} had distance {total_stop_distance}")
                         else:
                             print(f"Vehicle {vehicle.id} has gone to {last_stoptime[vehicle.id].stop_node.next.stop.name}")
+                            print(f"{time_string()} Vehicle {vehicle.id} has gone to {last_stoptime[vehicle.id].stop_node.next.stop.name}")
 
                         # 
 
