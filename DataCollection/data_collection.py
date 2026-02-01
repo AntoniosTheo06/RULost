@@ -5,15 +5,18 @@ from haversine import haversine
 
 first_day_of_sem = 20 # January 20, 2026 for Spring 2026
 
-last_stoptime: dict[int, StopTime] = {} # (stop, time)
-distance_traveled: dict[int, float] = {} # distance from last stop to recording time
-total_stop_distance: dict[int, float] = {} # distance from one stop to the next
-last_position: dict[int, tuple[float, float]] = {} # (latitude, longitude)
+last_stoptime: dict[str, StopTime] = {} # (stop, time, reached destination)
+distance_since_log: dict[str, float] = {} # distance from last stop to recording time
+total_stop_distance: dict[str, float] = {} # distance from one stop to the next
+last_position: dict[str, tuple[float, float]] = {} # (latitude, longitude)
+first_log_time: dict[str, int] = {} # time that bus was logged
 
 class StopNode:
     def __init__(self, stop: pg.Stop, next: StopNode = None):
         self.stop = stop
         self.next = next
+        self.average_stop_time = 0.0
+        self.num_data_points = 0.0
 
 class StopTime:
     def __init__(self, stop_node: StopNode, time: int, reached_stop: bool = False):
@@ -56,23 +59,24 @@ def ordered_stops(route: pg.Route) -> StopNode:
     return first_node
 
 def is_at_stop(bus: pg.Vehicle, stop: pg.Stop) -> bool:
-    distance_threshold_km = 0.01
+    distance_threshold_km = 0.040 # 40 meter radius
     return (haversine((float(bus.latitude), float(bus.longitude)), (stop.latitude, stop.longitude)) < distance_threshold_km)
 
-def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[pg.Route, StopNode]):
+def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[str, StopNode]):
     log_time = int(time.time())
-    target_time = log_time + 60 # run for the next 20 minutes
+    target_time = log_time + 20 * 60 # run for the next 20 minutes
 
-    with open("rulost_data.csv", "a") as f:
+    with open("rulost_data.csv", "a") as data, open("rulost_stops.csv") as stops:
         while int(time.time()) < target_time:
             vehicles = system.getVehicles()
             for vehicle in vehicles:
                 # add vehicle to dictionaries if not already present
                 if vehicle.id not in last_stoptime.keys():
                     last_stoptime[vehicle.id] = None
-                    distance_traveled[vehicle.id] = None
+                    distance_since_log[vehicle.id] = None
                     total_stop_distance[vehicle.id] = None
                     last_position[vehicle.id] = None
+                    first_log_time[vehicle.id] = None
                     print(f"Added vehicle {vehicle.id} to system")
                 
                 # Vehicle exists but is not established in system
@@ -82,9 +86,10 @@ def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[pg.Route
                     while True:
                         if is_at_stop(vehicle, ptr.stop):
                             last_stoptime[vehicle.id] = StopTime(ptr, int(time.time()), True)
-                            distance_traveled[vehicle.id] = 0.0
+                            distance_since_log[vehicle.id] = 0.0
                             total_stop_distance[vehicle.id] = 0.0
                             last_position[vehicle.id] = (float(vehicle.latitude), float(vehicle.longitude))
+                            first_log_time[vehicle.id] = 0
                             print(f"Established vehicle {vehicle.id} in system at stop {last_stoptime[vehicle.id].stop_node.stop.name}")
                             break
                         ptr = ptr.next
@@ -103,31 +108,34 @@ def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[pg.Route
                             day_of_sem = time.localtime().tm_yday - first_day_of_sem
                             day_of_week = time.localtime().tm_wday
                             departure_time = time_of_day(last_stoptime[vehicle.id].time)
-                            seconds_since_departure = log_time - last_stoptime[vehicle.id].time
-                            distance_left = total_stop_distance[vehicle.id] - distance_traveled[vehicle.id]
-                            result_time = int(time.time()) - log_time
+                            seconds_since_departure = first_log_time[vehicle.id] - last_stoptime[vehicle.id].time
+                            distance_left = distance_since_log[vehicle.id]
+                            result_time = int(time.time()) - first_log_time[vehicle.id]
 
                             print(f"{route_id},{stop_id},{semester},{day_of_sem},{day_of_week},{departure_time},{seconds_since_departure},{distance_left},{result_time}")
-                            print(f"Stop name is {last_stoptime[vehicle.id].stop_node.next.stop.name}")
-                            f.write(f"{route_id},{stop_id},{semester},{day_of_sem},{day_of_week},{departure_time},{seconds_since_departure},{distance_left},{result_time}")
+                            print(f"Vehicle {vehicle.id} went to {last_stoptime[vehicle.id].stop_node.next.stop.name}")
+                            if distance_left <= 10000: # failsafe against buses missing stops and looping back
+                                data.write(f"{route_id},{stop_id},{semester},{day_of_sem},{day_of_week},{departure_time},{seconds_since_departure},{distance_left},{result_time}\n")
+                                stops.write(f"{last_stoptime[vehicle.id].stop_node.next.stop.name} in route {vehicle.routeId} had distance {total_stop_distance}")
                         else:
-                            print(f"Vehicle has gone to {last_stoptime[vehicle.id].stop_node.next.stop.name}")
+                            print(f"Vehicle {vehicle.id} has gone to {last_stoptime[vehicle.id].stop_node.next.stop.name}")
+
+                        # 
 
                         # Reset bus counters
                         last_stoptime[vehicle.id] = StopTime(last_stoptime[vehicle.id].stop_node.next, int(time.time()), True)
-                        distance_traveled[vehicle.id] = 0.0
+                        distance_since_log[vehicle.id] = 0.0
                         total_stop_distance[vehicle.id] = 0.0
                     else:
                         # Update distances
-                        if last_stoptime[vehicle.id].reached_stop: # Distance traveled only counts until next loop
-                            distance_traveled[vehicle.id] += haversine(last_position[vehicle.id], (float(vehicle.latitude), float(vehicle.longitude))) * 1000
+                        if not last_stoptime[vehicle.id].reached_stop: # Distance since log only counts after next loop starts
+                            distance_since_log[vehicle.id] += haversine(last_position[vehicle.id], (float(vehicle.latitude), float(vehicle.longitude))) * 1000
                         
                         total_stop_distance[vehicle.id] += haversine(last_position[vehicle.id], (float(vehicle.latitude), float(vehicle.longitude))) * 1000
                     
-                    print(f"Vehicle {vehicle.id} has traveled {distance_traveled[vehicle.id]}, {total_stop_distance[vehicle.id]}")
+                    print(f"Vehicle {vehicle.id} has traveled {distance_since_log[vehicle.id]}, {total_stop_distance[vehicle.id]}")
                     last_position[vehicle.id] = (float(vehicle.latitude), float(vehicle.longitude))
             
-            time.sleep(1.5) # timeout to keep machine from exploding
 
 def time_of_day(time: int) -> int:
     return (time - 5 * 3600) % (3600 * 24) # seconds since midnight
@@ -160,21 +168,31 @@ def main():
         vehicles = system.getVehicles()
         # Assign all buses to "not reached stop" and remove ones that go out of service
         for vehicle_id in last_stoptime.keys():
+            if last_stoptime[vehicle_id] == None:
+                continue
+
+            print(vehicle_id)
+            print(last_stoptime[vehicle_id])
             is_in_list = False
             for vehicle in vehicles:
-                if vehicle.id == vehicle_id:
+                if int(vehicle.id) == vehicle_id:
                     is_in_list = True
                     break
             
             if not is_in_list:
-                last_stoptime.pop(vehicle.id, None)
-                distance_traveled.pop(vehicle.id, None)
+                last_stoptime.pop(vehicle_id, None)
+                distance_since_log.pop(vehicle_id, None)
                 total_stop_distance.pop(vehicle_id, None)
-                last_position.pop(vehicle.id, None)
+                last_position.pop(vehicle_id, None)
+                print(f"Deleted vehicle {vehicle_id}")
             else:
-                last_stoptime[vehicle.id].reached_stop = False
+                print(last_stoptime[vehicle_id].__dict__)
+                if last_stoptime[vehicle_id].reached_stop:
+                    last_stoptime[vehicle_id].reached_stop = False
+                    first_log_time[vehicle_id] = int(time.time())
+                    print(f"Logging vehicle {vehicle_id} at {first_log_time[vehicle_id]}")
         
-        # Run update_stops and write_file
+        # Updates bus info and writes to file
         update_stops(system, routes_to_stops)
 
     
