@@ -64,7 +64,7 @@ def is_at_stop(bus: pg.Vehicle, stop: pg.Stop) -> bool:
 
 def update_stops(system: pg.TransportationSystem, routes_to_stops: dict[str, StopNode]):
     log_time = int(time.time())
-    target_time = log_time + 16 * 60 # run for the next 14 minutes
+    target_time = log_time + 14 * 60 # run for the next 14 minutes
 
     with open("rulost_data.csv", "a") as data, open("rulost_stops.csv", "a") as stops:
         while int(time.time()) < target_time:
